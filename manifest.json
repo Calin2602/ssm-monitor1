@@ -1,0 +1,23 @@
+{
+  "name": "SSM Monitor",
+  "short_name": "SSM Monitor",
+  "description": "Aplicatie pentru monitorizarea activitatilor SSM",
+  "start_url": "/ssm-monitor1/",
+  "scope": "/ssm-monitor1/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3b82f6",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "https://calin2602.github.io/ssm-monitor1/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://calin2602.github.io/ssm-monitor1/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
