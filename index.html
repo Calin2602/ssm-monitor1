@@ -1,0 +1,1680 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <title>SSM Monitor</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#64748b;font-size:15px;">Se încarcă SSM Monitor...</div></div>
+  <script type="text/babel">
+const { useState, useEffect, useMemo, useCallback } = React;
+// XLSX loaded globally
+
+const AGENTI_DEFAULT = ["Liviu","Istvan","Gabi","Marin","Daniel","Raluca","Ioana","Viorica","Calin"];
+const PAROLE_DEFAULT = { Liviu:"liviu123", Istvan:"istvan123", Gabi:"gabi123", Marin:"marin123", Daniel:"daniel123", Raluca:"raluca123", Ioana:"ioana123", Viorica:"viorica123", Calin:"calin123", Admin:"admin2026" };
+const SERVICII_DEFAULT = ["Protecția muncii (SSM)","PSI","RSVTI / ISCIR","Evaluare riscuri","Documentație SSM/PSI","Coordonare șantier","Instructaj angajați","Control intern","Închiriere Cabana Dangău","Accident de muncă","Altele"];
+const STATUS_CFG = {
+  "Finalizat":  { bg:"#d1fae5", color:"#065f46", dot:"#10b981" },
+  "În progres": { bg:"#fef3c7", color:"#92400e", dot:"#f59e0b" },
+  "Planificat": { bg:"#dbeafe", color:"#1e40af", dot:"#3b82f6" },
+};
+const FRECVENTE = [
+  { label:"Zilnic",      zile:1   },
+  { label:"Saptamanal",  zile:7   },
+  { label:"Lunar",       zile:30  },
+  { label:"Trimestrial", zile:90  },
+  { label:"Semestrial",  zile:180 },
+  { label:"Anual",       zile:365 },
+];
+const DEFAULT_FRECVENTA = 90;
+const MONTHS_RO = ["Ianuarie","Februarie","Martie","Aprilie","Mai","Iunie","Iulie","August","Septembrie","Octombrie","Noiembrie","Decembrie"];
+const MONTHS_SHORT = ["Ian","Feb","Mar","Apr","Mai","Iun","Iul","Aug","Sep","Oct","Nov","Dec"];
+const DAYS_RO = ["Lu","Ma","Mi","Jo","Vi","Sâ","Du"];
+
+const DEMO_CLIENTI = [
+  {id:"c1",nume:"SC Construct SRL",oras:"București",domeniu:"Construcții"},
+  {id:"c2",nume:"Trans Logistic SA",oras:"Cluj-Napoca",domeniu:"Transport"},
+  {id:"c3",nume:"Metal Prod SRL",oras:"Brașov",domeniu:"Producție"},
+  {id:"c4",nume:"Agro Farm SRL",oras:"Timișoara",domeniu:"Agricultură"},
+  {id:"c5",nume:"Tech Solutions SRL",oras:"Iași",domeniu:"IT"},
+  {id:"c6",nume:"Hidro Instal SRL",oras:"Constanța",domeniu:"Instalații"},
+];
+const DEMO_ACT = [
+  {id:"a1",clientId:"c1",agent:"Alexandru",servicii:["Protecția muncii (SSM)","Documentație SSM/PSI"],data:"2026-05-15",status:"Finalizat",note:"Documentație completă."},
+  {id:"a2",clientId:"c2",agent:"Maria",servicii:["PSI","Instructaj angajați"],data:"2026-05-18",status:"Finalizat",note:"Instructaj 30 angajați."},
+  {id:"a3",clientId:"c3",agent:"Bogdan",servicii:["RSVTI / ISCIR"],data:"2026-05-20",status:"În progres",note:"Verificare echipamente."},
+  {id:"a4",clientId:"c1",agent:"Elena",servicii:["Evaluare riscuri"],data:"2026-05-22",status:"Planificat",note:""},
+  {id:"a5",clientId:"c5",agent:"Alexandru",servicii:["Coordonare șantier"],data:"2026-02-10",status:"Finalizat",note:""},
+  {id:"a6",clientId:"c4",agent:"Ionuț",servicii:["PSI"],data:"2026-01-15",status:"Finalizat",note:"Ultima vizită."},
+];
+
+async function loadData(key, fallback) {
+  try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : fallback; } catch { return fallback; }
+}
+async function saveData(key, val) { try { await window.storage.set(key, JSON.stringify(val)); } catch {} }
+
+function today() { return new Date().toISOString().split("T")[0]; }
+function uid() { return "x" + Math.random().toString(36).slice(2,10); }
+function daysBetween(d1, d2) { return Math.floor((new Date(d2)-new Date(d1))/(1000*60*60*24)); }
+function fmt(d) { if(!d) return "—"; const [y,m,dd]=d.split("-"); return `${dd}.${m}.${y}`; }
+
+function exportCSV(activitati, clientMap, agentFilter) {
+  const rows = activitati.filter(a => agentFilter==="Toți" || a.agent===agentFilter);
+  const header = ["Client","Oraș","Agent","Servicii","Data","Status","Note"];
+  const lines = rows.map(a => [
+    clientMap[a.clientId]?.nume||"", clientMap[a.clientId]?.oras||"",
+    a.agent, a.servicii.join("; "), a.data, a.status, a.note
+  ].map(v=>`"${v}"`).join(","));
+  const csv = [header.join(","),...lines].join("\n");
+  const blob = new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href=url; a.download="activitati_ssm.csv"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function getCalendarDays(year, month) {
+  const first = new Date(year, month, 1);
+  const last = new Date(year, month+1, 0);
+  const startDow = (first.getDay()+6)%7;
+  const days = [];
+  for(let i=0;i<startDow;i++) days.push(null);
+  for(let d=1;d<=last.getDate();d++) days.push(d);
+  return days;
+}
+
+function App() {
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState(null);
+  const [loginForm, setLoginForm] = useState({user:"",pass:"",err:""});
+  const [activitati, setActivitati] = useState([]);
+  const [clienti, setClienti] = useState([]);
+  const [tab, setTab] = useState("dashboard");
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const [actModal, setActModal] = useState(false);
+  const [clientModal, setClientModal] = useState(false);
+  const [importModal, setImportModal] = useState(false);
+  const [importPreview, setImportPreview] = useState([]);
+  const [importError, setImportError] = useState("");
+  const [clientSearch, setClientSearch] = useState("");
+  const [editId, setEditId] = useState(null);
+  const [actForm, setActForm] = useState({clientId:"",agent:"",servicii:[],data:today(),status:"Planificat",note:"",urmatoareaVizita:"",plata:""});
+  const [clientForm, setClientForm] = useState({nume:"",oras:"",domeniu:""});
+
+  const [fAgent, setFAgent] = useState("Toți");
+  const [fStatus, setFStatus] = useState("Toate");
+  const [fSearch, setFSearch] = useState("");
+  const [zilnicData, setZilnicData] = useState(today());
+  const [zilnicAgent, setZilnicAgent] = useState("toti");
+  const [zilnicAgentSel, setZilnicAgentSel] = useState(AGENTI_DEFAULT[0]);
+  const now = new Date();
+  const [lunarAn, setLunarAn] = useState(now.getFullYear());
+  const [lunarLuna, setLunarLuna] = useState(now.getMonth());
+  const [lunarAgent, setLunarAgent] = useState("Toți");
+  const [trimAgent, setTrimAgent] = useState("Toți");
+  const [trimPeriod, setTrimPeriod] = useState("custom");
+  const [trimDe, setTrimDe] = useState(()=>{ const d=new Date(); d.setDate(d.getDate()-90); return d.toISOString().split("T")[0]; });
+  const [trimPana, setTrimPana] = useState(today());
+
+  const [calYear, setCalYear] = useState(now.getFullYear());
+  const [calMonth, setCalMonth] = useState(now.getMonth());
+  const [calAgent, setCalAgent] = useState("Toți");
+
+  const [toast, setToast] = useState(null);
+  const [servicii, setServicii] = useState(SERVICII_DEFAULT);
+  const [serviciiNou, setServiciiNou] = useState("");
+  const [agentiList, setAgentiList] = useState(AGENTI_DEFAULT);
+  const [paroleMap, setParoleMap] = useState(PAROLE_DEFAULT);
+  const [agentNou, setAgentNou] = useState({nume:"",parola:""});
+  const [agentEditIdx, setAgentEditIdx] = useState(null);
+  const [agentEditVal, setAgentEditVal] = useState({nume:"",parola:""});
+
+  useEffect(() => {
+    (async () => {
+      const [a,c,u,sv,ag,pr] = await Promise.all([
+        loadData("ssm_activitati", DEMO_ACT),
+        loadData("ssm_clienti", DEMO_CLIENTI),
+        loadData("ssm_user", null),
+        loadData("ssm_servicii", SERVICII_DEFAULT),
+        loadData("ssm_agenti", AGENTI_DEFAULT),
+        loadData("ssm_parole", PAROLE_DEFAULT),
+      ]);
+      setActivitati(a); setClienti(c); setUser(u); setServicii(sv); setAgentiList(ag); setParoleMap(pr); setLoading(false);
+    })();
+  }, []);
+
+  useEffect(() => { if(!loading) saveData("ssm_activitati", activitati); }, [activitati, loading]);
+  useEffect(() => { if(!loading) saveData("ssm_clienti", clienti); }, [clienti, loading]);
+  useEffect(() => { if(!loading) saveData("ssm_servicii", servicii); }, [servicii, loading]);
+  useEffect(() => { if(!loading) saveData("ssm_agenti", agentiList); }, [agentiList, loading]);
+  useEffect(() => { if(!loading) saveData("ssm_parole", paroleMap); }, [paroleMap, loading]);
+  useEffect(() => { if(!loading) saveData("ssm_user", user); }, [user, loading]);
+
+  const showToast = useCallback((msg, type="ok") => {
+    setToast({msg,type}); setTimeout(()=>setToast(null),3000);
+  }, []);
+
+  const clientMap = useMemo(() => Object.fromEntries(clienti.map(c=>[c.id,c])), [clienti]);
+  const isAdmin = user?.role==="admin";
+  const myAgent = user?.name;
+
+  const visibleAct = useMemo(() => {
+    let list = isAdmin ? activitati : activitati.filter(a=>a.agent===myAgent);
+    if(fAgent!=="Toți") list=list.filter(a=>a.agent===fAgent);
+    if(fStatus!=="Toate") list=list.filter(a=>a.status===fStatus);
+    if(fSearch) list=list.filter(a=>
+      clientMap[a.clientId]?.nume?.toLowerCase().includes(fSearch.toLowerCase())||
+      a.agent.toLowerCase().includes(fSearch.toLowerCase())
+    );
+    return list.sort((a,b)=>new Date(b.data)-new Date(a.data));
+  }, [activitati, isAdmin, myAgent, fAgent, fStatus, fSearch, clientMap]);
+
+  const alerts = useMemo(() => {
+    const t = today();
+    return clienti.filter(c => {
+      const actC = activitati.filter(a=>a.clientId===c.id&&a.status==="Finalizat");
+      if(!actC.length) return true;
+      const last = actC.sort((a,b)=>new Date(b.data)-new Date(a.data))[0];
+      // daca agentul a setat urmatoarea vizita, alerta apare daca a trecut data
+      if(last.urmatoareaVizita) return t >= last.urmatoareaVizita;
+      // fallback: 90 zile
+      return daysBetween(last.data, t) >= 90;
+    });
+  }, [clienti, activitati]);
+
+  const calEvents = useMemo(() => {
+    const map = {};
+    // activitati normale
+    activitati.forEach(a => {
+      if(calAgent!=="Toți"&&a.agent!==calAgent) return;
+      const [y,m] = a.data.split("-").map(Number);
+      if(y===calYear&&m-1===calMonth) {
+        const d=parseInt(a.data.split("-")[2]);
+        if(!map[d]) map[d]=[];
+        map[d].push({...a, _tip:"vizita"});
+      }
+    });
+    // urmatoarele vizite programate
+    activitati.forEach(a => {
+      if(!a.urmatoareaVizita) return;
+      if(calAgent!=="Toți"&&a.agent!==calAgent) return;
+      const [y,m] = a.urmatoareaVizita.split("-").map(Number);
+      if(y===calYear&&m-1===calMonth) {
+        const d=parseInt(a.urmatoareaVizita.split("-")[2]);
+        if(!map[d]) map[d]=[];
+        map[d].push({...a, _tip:"urmatoare"});
+      }
+    });
+    return map;
+  }, [activitati, calYear, calMonth, calAgent]);
+
+  const stats = useMemo(() => {
+    const src = isAdmin ? activitati : activitati.filter(a=>a.agent===myAgent);
+    return {
+      total: src.length,
+      finalizate: src.filter(a=>a.status==="Finalizat").length,
+      inProgres: src.filter(a=>a.status==="În progres").length,
+      planificate: src.filter(a=>a.status==="Planificat").length,
+      clientiActivi: new Set(src.map(a=>a.clientId)).size,
+      perAgent: agentiList.map(ag=>({agent:ag,count:src.filter(a=>a.agent===ag).length})).filter(x=>x.count>0).sort((a,b)=>b.count-a.count),
+    };
+  }, [activitati, isAdmin, myAgent]);
+
+  function doLogin() {
+    const {user:u,pass} = loginForm;
+    if(u==="Admin"&&pass===paroleMap["Admin"]) { setUser({name:"Admin",role:"admin"}); showToast("Bun venit, Admin!"); }
+    else if(agentiList.includes(u)&&paroleMap[u]===pass) { setUser({name:u,role:"agent"}); showToast(`Bun venit, ${u}!`); }
+    else setLoginForm(f=>({...f,err:"Utilizator sau parolă incorectă."}));
+  }
+  function doLogout() { setUser(null); setTab("dashboard"); setMenuOpen(false); }
+
+  function openAdd(prefill={}) {
+    setActForm({clientId:"",agent:isAdmin?"":myAgent,servicii:[],data:today(),status:"Planificat",note:"",urmatoareaVizita:"",plata:"",...prefill});
+    setEditId(null); setActModal(true);
+  }
+  function openEdit(act) {
+    setActForm({clientId:act.clientId,agent:act.agent,servicii:[...act.servicii],data:act.data,status:act.status,note:act.note,urmatoareaVizita:act.urmatoareaVizita||"",plata:act.plata||""});
+    setEditId(act.id); setActModal(true);
+  }
+  function saveAct() {
+    if(!actForm.clientId||!actForm.agent||!actForm.servicii.length||!actForm.data) { showToast("Completează câmpurile obligatorii!","err"); return; }
+    const eDoarCabana = actForm.servicii.length===1 && actForm.servicii[0]==="Închiriere Cabana Dangău";
+    const vizitePrecedente = activitati.filter(a=>a.clientId===actForm.clientId && (!editId || a.id!==editId));
+    const ePrivaVizita = vizitePrecedente.length===0;
+    if(!eDoarCabana && (actForm.status==="Finalizat"||actForm.status==="În progres") && !actForm.urmatoareaVizita) {
+      showToast(ePrivaVizita ? "La prima vizită trebuie să setezi data următoarei vizite!" : "Te rugăm să setezi data următoarei vizite!", "err");
+      return;
+    }
+    if(editId) { setActivitati(p=>p.map(a=>a.id===editId?{...a,...actForm}:a)); showToast("Actualizat!"); }
+    else { setActivitati(p=>[...p,{...actForm,id:uid()}]); showToast("Activitate adăugată!"); }
+    setActModal(false);
+  }
+  function deleteAct(id) { if(confirm("Ștergi activitatea?")){ setActivitati(p=>p.filter(a=>a.id!==id)); showToast("Ștearsă."); } }
+  function toggleServ(s) { setActForm(f=>({...f,servicii:f.servicii.includes(s)?f.servicii.filter(x=>x!==s):[...f.servicii,s]})); }
+  function saveClient() {
+    if(!clientForm.nume) { showToast("Introdu numele firmei!","err"); return; }
+    setClienti(p=>[...p,{...clientForm,id:uid()}]);
+    setClientForm({nume:"",oras:"",domeniu:""}); setClientModal(false); showToast("Client adăugat!");
+  }
+
+  function deleteClient(id) {
+    const hasAct = activitati.some(a=>a.clientId===id);
+    const c = clienti.find(c=>c.id===id);
+    if(hasAct) {
+      if(!confirm(`"${c?.nume}" are activitati inregistrate. Activitatile raman fara client asociat.\n\nContinui?`)) return;
+    } else {
+      if(!confirm(`Stergi clientul "${c?.nume}"?`)) return;
+    }
+    setClienti(p=>p.filter(x=>x.id!==id));
+    showToast("Client sters.");
+  }
+
+  function handleImportFile(e) {
+    const file = e.target.files[0];
+    if(!file) return;
+    setImportError("");
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = new Uint8Array(ev.target.result);
+        const workbook = XLSX.read(data, {type:"array"});
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, {defval:""});
+        if(!rows.length) { setImportError("Fisierul este gol sau nu contine date."); return; }
+        // detect columns case-insensitive
+        const keys = Object.keys(rows[0]);
+        const findKey = (...terms) => keys.find(k=>terms.some(t=>k.toLowerCase().includes(t)));
+        const kNume = findKey("denumire","nume client","client","name","firma","companie");
+        const kOras = findKey("oras","oraș","localitate","city","judet","județ");
+        const kDomeniu = findKey("domeniu","activitate","tip","cod caen","caen");
+        if(!kNume) { setImportError("Nu am gasit coloana cu numele firmei. Coloanele detectate: " + keys.join(", ")); return; }
+        const parsed = rows.map(r=>({
+          id: uid(),
+          nume: String(r[kNume]||"").trim(),
+          oras: kOras ? String(r[kOras]||"").trim() : "",
+          domeniu: kDomeniu ? String(r[kDomeniu]||"").trim() : "",
+        })).filter(r=>r.nume);
+        if(!parsed.length) { setImportError("Nu am gasit niciun client valid in fisier."); return; }
+        setImportPreview(parsed);
+      } catch(err) { setImportError("Eroare la citirea fisierului: " + err.message); }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value="";
+  }
+
+  function confirmImport() {
+    const existente = new Set(clienti.map(c=>c.nume.toLowerCase().trim()));
+    const noi = importPreview.filter(c=>!existente.has(c.nume.toLowerCase().trim()));
+    const dup = importPreview.length - noi.length;
+    setClienti(p=>[...p,...noi]);
+    setImportModal(false); setImportPreview([]);
+    showToast(`${noi.length} clienti importati${dup>0?`, ${dup} duplicate ignorate`:""}!`);
+  }
+
+  const clientiFiltrati = useMemo(()=>{
+    if(!clientSearch) return clienti;
+    return clienti.filter(c=>c.nume.toLowerCase().includes(clientSearch.toLowerCase())||c.oras?.toLowerCase().includes(clientSearch.toLowerCase()));
+  },[clienti, clientSearch]);
+
+  function navTo(t) {
+    const adminOnly = ["agenti","export","setari"];
+    if(!isAdmin && adminOnly.includes(t)) { showToast("Acces restricționat!","err"); return; }
+    setTab(t); setMenuOpen(false);
+  }
+
+  // redirect if on restricted tab
+  useEffect(()=>{
+    const adminOnly = ["agenti","export","setari"];
+    if(user && !isAdmin && adminOnly.includes(tab)) setTab("dashboard");
+  },[user, isAdmin, tab]);
+
+  const navItems = [
+    {id:"dashboard", icon:"📊", label:"Dashboard"},
+    {id:"activitati", icon:"📋", label:"Activități"},
+    {id:"zilnic", icon:"📆", label:"Raport zilnic"},
+    {id:"calendar", icon:"📅", label:"Calendar"},
+    {id:"alerte", icon:"🔔", label:"Alerte", badge:alerts.length||null},
+    {id:"clienti", icon:"🏢", label:"Clienți"},
+    ...(isAdmin?[
+      {id:"agenti",icon:"👥",label:"Agenți"},
+      {id:"lunar",icon:"📅",label:"Raport lunar"},
+      {id:"trimestrial",icon:"📈",label:"Raport trimestrial"},
+      {id:"export",icon:"📤",label:"Export"},
+      {id:"setari",icon:"⚙️",label:"Setări"},
+    ]:[]),
+  ];
+
+  const css = `
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:'Plus Jakarta Sans',sans-serif;}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes slideIn{from{opacity:0;transform:translateX(-16px)}to{opacity:1;transform:translateX(0)}}
+    .fade{animation:fadeUp 0.25s ease;}
+    .nav-item:hover{background:#1e293b!important;color:#f8fafc!important;}
+    .row-hover:hover td{background:#f8fafc;}
+    button:active{transform:scale(0.97);}
+
+    /* ── DESKTOP sidebar layout ── */
+    .app-layout{display:flex;min-height:100vh;background:#f0f4f8;}
+    .sidebar{width:230px;flex-shrink:0;background:#0a0f1e;display:flex;flex-direction:column;min-height:100vh;position:fixed;top:0;left:0;bottom:0;z-index:50;transition:transform 0.25s ease;}
+    .sidebar-inner{display:flex;flex-direction:column;height:100%;}
+    .main-content{margin-left:230px;flex:1;padding:28px 32px;min-height:100vh;}
+
+    /* ── MOBILE overrides ── */
+    @media(max-width:768px){
+      .sidebar{transform:translateX(-100%);width:260px;z-index:200;}
+      .sidebar.open{transform:translateX(0);box-shadow:6px 0 32px rgba(0,0,0,0.4);}
+      .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:199;}
+      .sidebar-overlay.open{display:block;}
+      .main-content{margin-left:0;padding:16px;}
+      .mobile-header{display:flex!important;}
+      .stats-grid{grid-template-columns:repeat(2,1fr)!important;}
+      .two-col{grid-template-columns:1fr!important;}
+      .agents-grid{grid-template-columns:1fr!important;}
+      .hide-mobile{display:none!important;}
+      .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+      .cal-cell{min-height:38px!important;padding:3px 4px!important;}
+      .cal-event{display:none!important;}
+      .export-grid{grid-template-columns:1fr!important;}
+      .chip-grid{grid-template-columns:1fr!important;}
+      .modal-inner{padding:20px!important;width:96vw!important;}
+    }
+    @media(min-width:769px){
+      .mobile-header{display:none!important;}
+      .sidebar-overlay{display:none!important;}
+    }
+
+    /* activity card for mobile */
+    .act-card{background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,0.07);}
+
+    /* scrollbar */
+    ::-webkit-scrollbar{width:4px;height:4px;}
+    ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px;}
+  `;
+
+  const S = {
+    // global
+    app:{fontFamily:"'Plus Jakarta Sans',sans-serif",minHeight:"100vh",background:"#f0f4f8",color:"#1a202c"},
+    // mobile header
+    mobileHeader:{display:"none",alignItems:"center",justifyContent:"space-between",background:"#0a0f1e",padding:"14px 16px",position:"sticky",top:0,zIndex:100},
+    mobileTitle:{fontSize:16,fontWeight:800,color:"#f8fafc"},
+    hamburger:{background:"none",border:"none",color:"#f8fafc",fontSize:22,cursor:"pointer",padding:"4px 8px",lineHeight:1},
+    // sidebar
+    sideTop:{padding:"24px 20px 18px",borderBottom:"1px solid #1e293b"},
+    logo:{fontSize:17,fontWeight:800,color:"#f8fafc",letterSpacing:"-0.5px"},
+    logoSub:{fontSize:11,color:"#475569",marginTop:3},
+    userChip:{marginTop:12,background:"#1e293b",borderRadius:8,padding:"8px 12px",display:"flex",alignItems:"center",gap:8},
+    avatar:{width:30,height:30,borderRadius:"50%",background:"#3b82f6",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,color:"#fff",flexShrink:0},
+    userName:{fontSize:12,fontWeight:600,color:"#e2e8f0",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"},
+    userRole:{fontSize:10,color:"#64748b"},
+    nav:{flex:1,padding:"10px 0",overflowY:"auto"},
+    navItem:(a)=>({display:"flex",alignItems:"center",gap:10,padding:"11px 20px",cursor:"pointer",fontSize:13,fontWeight:a?600:400,color:a?"#f8fafc":"#94a3b8",background:a?"#1e293b":"transparent",borderLeft:a?"3px solid #3b82f6":"3px solid transparent",transition:"all 0.15s",userSelect:"none"}),
+    navBadge:{background:"#ef4444",color:"#fff",borderRadius:20,padding:"1px 7px",fontSize:10,fontWeight:700,marginLeft:"auto"},
+    sideBottom:{padding:"14px 20px",borderTop:"1px solid #1e293b"},
+    logoutBtn:{width:"100%",background:"transparent",border:"1px solid #1e293b",color:"#64748b",borderRadius:8,padding:"9px",fontSize:12,cursor:"pointer"},
+    // page
+    header:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,gap:12,flexWrap:"wrap"},
+    pageTitle:{fontSize:20,fontWeight:800,color:"#0a0f1e",letterSpacing:"-0.5px"},
+    pageSub:{fontSize:12,color:"#64748b",marginTop:2},
+    // buttons
+    btn:{background:"#3b82f6",color:"#fff",border:"none",borderRadius:9,padding:"9px 16px",fontSize:13,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"},
+    btnSm:{background:"#f1f5f9",color:"#374151",border:"none",borderRadius:7,padding:"6px 10px",fontSize:12,cursor:"pointer"},
+    btnDanger:{background:"#fee2e2",color:"#dc2626",border:"none",borderRadius:7,padding:"6px 10px",fontSize:12,cursor:"pointer"},
+    btnOutline:{background:"#fff",color:"#374151",border:"1px solid #e2e8f0",borderRadius:9,padding:"9px 14px",fontSize:13,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap"},
+    // card
+    card:{background:"#fff",borderRadius:14,padding:"18px 20px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"},
+    statCard:(c)=>({background:"#fff",borderRadius:12,padding:"14px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",borderTop:`3px solid ${c}`}),
+    statNum:{fontSize:26,fontWeight:900,color:"#0a0f1e",letterSpacing:"-1px"},
+    statLabel:{fontSize:11,color:"#64748b",marginTop:1,fontWeight:500},
+    // table
+    table:{width:"100%",borderCollapse:"collapse",minWidth:580},
+    th:{textAlign:"left",padding:"9px 12px",fontSize:11,fontWeight:600,color:"#94a3b8",textTransform:"uppercase",letterSpacing:"0.5px",borderBottom:"2px solid #f1f5f9"},
+    td:{padding:"10px 12px",fontSize:13,borderBottom:"1px solid #f8fafc",verticalAlign:"middle"},
+    badge:(s)=>({display:"inline-flex",alignItems:"center",gap:5,padding:"3px 9px",borderRadius:20,fontSize:11,fontWeight:600,background:STATUS_CFG[s]?.bg,color:STATUS_CFG[s]?.color,whiteSpace:"nowrap"}),
+    dot:(s)=>({width:6,height:6,borderRadius:"50%",background:STATUS_CFG[s]?.dot,flexShrink:0}),
+    // filters
+    filters:{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"},
+    select:{padding:"8px 10px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:13,background:"#fff",color:"#374151",cursor:"pointer",outline:"none"},
+    input:{padding:"8px 10px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:13,background:"#fff",color:"#374151",outline:"none"},
+    // modal
+    overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:16},
+    modal:{background:"#fff",borderRadius:18,padding:28,width:520,maxWidth:"100%",maxHeight:"90vh",overflowY:"auto",boxShadow:"0 24px 60px rgba(0,0,0,0.2)"},
+    modalTitle:{fontSize:17,fontWeight:800,marginBottom:20,color:"#0a0f1e"},
+    formGroup:{marginBottom:13},
+    label:{fontSize:12,fontWeight:600,color:"#374151",display:"block",marginBottom:5},
+    formInput:{width:"100%",padding:"9px 12px",borderRadius:9,border:"1px solid #e2e8f0",fontSize:13,outline:"none",boxSizing:"border-box",fontFamily:"inherit"},
+    chip:(sel)=>({padding:"8px 10px",borderRadius:8,fontSize:12,fontWeight:500,cursor:"pointer",background:sel?"#dbeafe":"#f8fafc",color:sel?"#1e40af":"#64748b",border:`1px solid ${sel?"#93c5fd":"#e2e8f0"}`,transition:"all 0.1s",userSelect:"none"}),
+    modalActions:{display:"flex",gap:10,justifyContent:"flex-end",marginTop:20},
+    // alert
+    alertBanner:{background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"flex-start",gap:10},
+    // login
+    loginWrap:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(135deg,#0a0f1e 0%,#0f172a 60%,#1e1b4b 100%)",padding:16},
+    loginCard:{background:"#fff",borderRadius:20,padding:"36px 32px",width:"100%",maxWidth:380,boxShadow:"0 32px 80px rgba(0,0,0,0.4)"},
+    loginTitle:{fontSize:22,fontWeight:900,color:"#0a0f1e",letterSpacing:"-0.5px",marginBottom:4},
+    loginSub:{fontSize:13,color:"#64748b",marginBottom:24},
+    loginInput:{width:"100%",padding:"12px 14px",borderRadius:10,border:"1px solid #e2e8f0",fontSize:14,outline:"none",marginBottom:10,fontFamily:"inherit"},
+    loginBtn:{width:"100%",background:"#3b82f6",color:"#fff",border:"none",borderRadius:10,padding:"13px",fontSize:14,fontWeight:700,cursor:"pointer",marginTop:4},
+    loginErr:{background:"#fee2e2",color:"#dc2626",borderRadius:8,padding:"9px 12px",fontSize:13,marginBottom:10},
+    loginHint:{marginTop:18,background:"#f8fafc",borderRadius:10,padding:"12px",fontSize:12,color:"#64748b"},
+    // toast
+    toastWrap:{position:"fixed",bottom:20,right:16,zIndex:999},
+    toastItem:(t)=>({background:t==="err"?"#dc2626":"#0a0f1e",color:"#fff",borderRadius:10,padding:"11px 16px",fontSize:13,fontWeight:500,boxShadow:"0 8px 24px rgba(0,0,0,0.2)",animation:"fadeUp 0.2s ease"}),
+    // act card (mobile)
+    actCard:{background:"#fff",borderRadius:12,padding:"14px 16px",marginBottom:10,boxShadow:"0 1px 4px rgba(0,0,0,0.07)"},
+    actCardTitle:{fontWeight:700,fontSize:14,color:"#0a0f1e"},
+    actCardSub:{fontSize:12,color:"#64748b",marginTop:2},
+  };
+
+  if(loading) return (
+    <div style={S.loginWrap}><style>{css}</style>
+      <div style={{color:"#fff",fontSize:15,fontWeight:600,opacity:0.6}}>Se încarcă...</div>
+    </div>
+  );
+
+  if(!user) return (
+    <div style={S.loginWrap}><style>{css}</style>
+      <div style={S.loginCard} className="fade">
+        <div style={S.loginTitle}>SSM Monitor</div>
+        <div style={S.loginSub}>Intră în contul tău</div>
+        {loginForm.err&&<div style={S.loginErr}>{loginForm.err}</div>}
+        <input style={S.loginInput} placeholder="Utilizator" value={loginForm.user}
+          onChange={e=>setLoginForm(f=>({...f,user:e.target.value,err:""}))}
+          onKeyDown={e=>e.key==="Enter"&&doLogin()}/>
+        <input style={S.loginInput} type="password" placeholder="Parolă" value={loginForm.pass}
+          onChange={e=>setLoginForm(f=>({...f,pass:e.target.value,err:""}))}
+          onKeyDown={e=>e.key==="Enter"&&doLogin()}/>
+        <button style={S.loginBtn} onClick={doLogin}>Intră în cont →</button>
+        <div style={S.loginHint}>
+          <strong>Demo:</strong> Admin / admin2026<br/>
+          Agenți: Alexandru / alex123, Maria / maria123 etc.
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── Activity list: table on desktop, cards on mobile ──────────────────────
+  const ActList = () => (
+    <>
+      {/* Desktop table */}
+      <div className="hide-mobile" style={S.card}>
+        <div className="table-scroll">
+          <table style={S.table}>
+            <thead>
+              <tr>{["Client","Agent","Servicii","Data","Status","Plată","Note",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {visibleAct.length===0&&<tr><td colSpan={8} style={{...S.td,textAlign:"center",padding:32,color:"#94a3b8"}}>Nicio activitate găsită.</td></tr>}
+              {visibleAct.map(a=>(
+                <tr key={a.id} className="row-hover">
+                  <td style={S.td}><div style={{fontWeight:600}}>{clientMap[a.clientId]?.nume||"?"}</div><div style={{fontSize:11,color:"#94a3b8"}}>{clientMap[a.clientId]?.oras}</div></td>
+                  <td style={{...S.td,fontWeight:500}}>{a.agent}</td>
+                  <td style={S.td}><div style={{display:"flex",flexWrap:"wrap",gap:3}}>{a.servicii.map(s=><span key={s} style={{background:"#f1f5f9",color:"#475569",borderRadius:6,padding:"2px 6px",fontSize:11}}>{s}</span>)}</div></td>
+                  <td style={{...S.td,fontSize:12,whiteSpace:"nowrap"}}>{fmt(a.data)}</td>
+                  <td style={S.td}><span style={S.badge(a.status)}><span style={S.dot(a.status)}/>{a.status}</span></td>
+                  <td style={S.td}>{a.plata?<span style={{background:a.plata==="Cash"?"#fef9c3":"#dbeafe",color:a.plata==="Cash"?"#854d0e":"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{a.plata==="Cash"?"💵 Cash":"🏦 OP"}</span>:<span style={{color:"#cbd5e1",fontSize:11}}>—</span>}</td>
+                  <td style={{...S.td,maxWidth:120,fontSize:12,color:"#64748b"}}>{a.note||"—"}</td>
+                  <td style={S.td}>{(isAdmin||a.agent===myAgent)&&<div style={{display:"flex",gap:5}}><button style={S.btnSm} onClick={()=>openEdit(a)}>✏️</button><button style={S.btnDanger} onClick={()=>deleteAct(a.id)}>🗑️</button></div>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Mobile cards */}
+      <div style={{display:"none"}} className="show-mobile-block">
+        {visibleAct.length===0&&<div style={{textAlign:"center",color:"#94a3b8",padding:32,fontSize:13}}>Nicio activitate găsită.</div>}
+        {visibleAct.map(a=>(
+          <div key={a.id} style={S.actCard}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={S.actCardTitle}>{clientMap[a.clientId]?.nume||"?"}</div>
+                <div style={S.actCardSub}>{a.agent} · {fmt(a.data)}</div>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
+                <span style={S.badge(a.status)}><span style={S.dot(a.status)}/>{a.status}</span>
+                {a.plata&&<span style={{background:a.plata==="Cash"?"#fef9c3":"#dbeafe",color:a.plata==="Cash"?"#854d0e":"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{a.plata==="Cash"?"💵":"🏦"} {a.plata}</span>}
+              </div>
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:8}}>
+              {a.servicii.map(s=><span key={s} style={{background:"#f1f5f9",color:"#475569",borderRadius:6,padding:"2px 7px",fontSize:11}}>{s}</span>)}
+            </div>
+            {a.note&&<div style={{fontSize:12,color:"#64748b",marginTop:6}}>{a.note}</div>}
+            {(isAdmin||a.agent===myAgent)&&(
+              <div style={{display:"flex",gap:8,marginTop:10}}>
+                <button style={{...S.btnSm,flex:1}} onClick={()=>openEdit(a)}>✏️ Editează</button>
+                <button style={{...S.btnDanger,flex:1}} onClick={()=>deleteAct(a.id)}>🗑️ Șterge</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+
+  return (
+    <div style={S.app}>
+      <style>{css}
+        {`
+          @media(max-width:768px){
+            .hide-mobile{display:none!important;}
+            .show-mobile-block{display:block!important;}
+          }
+        `}
+      </style>
+
+      {/* Mobile top bar */}
+      <div className="mobile-header" style={S.mobileHeader}>
+        <div style={S.mobileTitle}>SSM Monitor</div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          {alerts.length>0&&<span style={{background:"#ef4444",color:"#fff",borderRadius:20,padding:"2px 8px",fontSize:11,fontWeight:700}}>{alerts.length}</span>}
+          <button style={S.hamburger} onClick={()=>setMenuOpen(o=>!o)}>☰</button>
+        </div>
+      </div>
+
+      {/* Sidebar overlay (mobile) */}
+      <div className={`sidebar-overlay${menuOpen?" open":""}`} onClick={()=>setMenuOpen(false)}/>
+
+      {/* Sidebar */}
+      <div className={`sidebar${menuOpen?" open":""}`}>
+        <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+          <div style={S.sideTop}>
+            <div style={S.logo}>SSM Monitor</div>
+            <div style={S.logoSub}>Managementul activităților</div>
+            <div style={S.userChip}>
+              <div style={S.avatar}>{user.name[0]}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={S.userName}>{user.name}</div>
+                <div style={S.userRole}>{isAdmin?"Administrator":"Agent teren"}</div>
+              </div>
+            </div>
+          </div>
+          <nav style={S.nav}>
+            {navItems.map(item=>(
+              <div key={item.id} className="nav-item" style={S.navItem(tab===item.id)} onClick={()=>navTo(item.id)}>
+                <span style={{fontSize:16}}>{item.icon}</span>
+                <span style={{flex:1}}>{item.label}</span>
+                {item.badge?<span style={S.navBadge}>{item.badge}</span>:null}
+              </div>
+            ))}
+          </nav>
+          <div style={S.sideBottom}>
+            <div style={{fontSize:11,color:"#334155",marginBottom:8}}>{clienti.length} clienți · {activitati.length} activități</div>
+            <button style={S.logoutBtn} onClick={doLogout}>⬅ Deconectare</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Main content */}
+      <div className="main-content">
+
+        {/* ── DASHBOARD ── */}
+        {tab==="dashboard"&&(
+          <div className="fade">
+            <div style={S.header}>
+              <div>
+                <div style={S.pageTitle}>Bun venit, {user.name}!</div>
+                <div style={S.pageSub}>{new Date().toLocaleDateString("ro-RO",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</div>
+              </div>
+              <button style={S.btn} onClick={()=>openAdd()}>+ Activitate</button>
+            </div>
+
+            {alerts.length>0&&(
+              <div style={S.alertBanner}>
+                <span style={{fontSize:18}}>⚠️</span>
+                <div style={{fontSize:13,color:"#9a3412",fontWeight:500}}>
+                  <strong>{alerts.length} clienți</strong> cu vizita depășită sau neprogramată.{" "}
+                  <span style={{textDecoration:"underline",cursor:"pointer"}} onClick={()=>setTab("alerte")}>Vezi alertele →</span>
+                </div>
+              </div>
+            )}
+
+            <div className="stats-grid" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:12,marginBottom:18}}>
+              {[{l:"Total",v:stats.total,c:"#3b82f6"},{l:"Finalizate",v:stats.finalizate,c:"#10b981"},{l:"În progres",v:stats.inProgres,c:"#f59e0b"},{l:"Planificate",v:stats.planificate,c:"#6366f1"},{l:"Clienți activi",v:stats.clientiActivi,c:"#ec4899"}].map(s=>(
+                <div key={s.l} style={S.statCard(s.c)}>
+                  <div style={S.statNum}>{s.v}</div>
+                  <div style={S.statLabel}>{s.l}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="two-col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+              <div style={S.card}>
+                <div style={{fontWeight:700,marginBottom:14,fontSize:14}}>Activitate per agent</div>
+                {stats.perAgent.length===0&&<div style={{color:"#94a3b8",fontSize:13}}>Nicio activitate.</div>}
+                {stats.perAgent.map(x=>{
+                  const pct=(x.count/Math.max(...stats.perAgent.map(p=>p.count),1))*100;
+                  return(
+                    <div key={x.agent} style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                      <div style={{width:80,fontSize:12,color:"#374151",fontWeight:500,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.agent}</div>
+                      <div style={{flex:1,height:6,background:"#f1f5f9",borderRadius:4,overflow:"hidden"}}>
+                        <div style={{height:"100%",background:"#3b82f6",borderRadius:4,width:`${pct}%`,transition:"width 0.5s"}}/>
+                      </div>
+                      <div style={{width:18,textAlign:"right",fontSize:12,fontWeight:700,color:"#0a0f1e"}}>{x.count}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={S.card}>
+                <div style={{fontWeight:700,marginBottom:14,fontSize:14}}>Ultimele activități</div>
+                {[...activitati].sort((a,b)=>new Date(b.data)-new Date(a.data)).slice(0,5).map(a=>(
+                  <div key={a.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #f1f5f9",gap:8}}>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{clientMap[a.clientId]?.nume}</div>
+                      <div style={{fontSize:11,color:"#94a3b8"}}>{a.agent} · {fmt(a.data)}</div>
+                    </div>
+                    <span style={S.badge(a.status)}><span style={S.dot(a.status)}/>{a.status}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── ACTIVITATI ── */}
+        {tab==="activitati"&&(
+          <div className="fade">
+            <div style={S.header}>
+              <div>
+                <div style={S.pageTitle}>Activități</div>
+                <div style={S.pageSub}>{visibleAct.length} înregistrări</div>
+              </div>
+              <button style={S.btn} onClick={()=>openAdd()}>+ Adaugă</button>
+            </div>
+            <div style={S.filters}>
+              <input style={{...S.input,flex:1,minWidth:140}} placeholder="🔍 Caută..." value={fSearch} onChange={e=>setFSearch(e.target.value)}/>
+              {isAdmin&&<select style={S.select} value={fAgent} onChange={e=>setFAgent(e.target.value)}>
+                <option>Toți</option>
+                {agentiList.map(a=><option key={a}>{a}</option>)}
+              </select>}
+              <select style={S.select} value={fStatus} onChange={e=>setFStatus(e.target.value)}>
+                <option>Toate</option>
+                <option>Planificat</option>
+                <option>În progres</option>
+                <option>Finalizat</option>
+              </select>
+            </div>
+            <ActList/>
+          </div>
+        )}
+
+        {/* ── ZILNIC ── */}
+        {tab==="zilnic"&&(
+          <div className="fade">
+            <div style={S.header}>
+              <div>
+                <div style={S.pageTitle}>Raport zilnic</div>
+                <div style={S.pageSub}>{fmt(zilnicData)}</div>
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                <input type="date" style={{...S.select,cursor:"pointer"}} value={zilnicData} onChange={e=>setZilnicData(e.target.value)}/>
+                <button style={S.btnOutline} onClick={()=>setZilnicData(today())}>Azi</button>
+              </div>
+            </div>
+
+            {/* Toggle vizualizare — doar Admin */}
+            {isAdmin&&(
+              <div style={{display:"flex",gap:0,marginBottom:20,background:"#f1f5f9",borderRadius:10,padding:4,width:"fit-content"}}>
+                {[{id:"toti",label:"👥 Toți agenții"},{id:"individual",label:"👤 Per agent"}].map(v=>(
+                  <button key={v.id}
+                    style={{padding:"8px 18px",borderRadius:8,border:"none",fontSize:13,fontWeight:600,cursor:"pointer",background:zilnicAgent===v.id?"#fff":"transparent",color:zilnicAgent===v.id?"#0a0f1e":"#64748b",boxShadow:zilnicAgent===v.id?"0 1px 4px rgba(0,0,0,0.1)":"none",transition:"all 0.15s"}}
+                    onClick={()=>setZilnicAgent(v.id)}>
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {(()=>{
+              // ── AGENT: vede doar activitatea proprie ──
+              if(!isAdmin) {
+                const actAg = activitati.filter(a=>a.data===zilnicData&&a.agent===myAgent);
+                const cashAg = actAg.filter(a=>a.plata==="Cash").length;
+                const opAg = actAg.filter(a=>a.plata==="OP").length;
+                return(
+                  <>
+                    <div className="stats-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:18}}>
+                      <div style={S.statCard("#3b82f6")}><div style={S.statNum}>{actAg.length}</div><div style={S.statLabel}>Vizitele mele</div></div>
+                      <div style={S.statCard("#f59e0b")}><div style={S.statNum}>{cashAg}</div><div style={S.statLabel}>💵 Cash</div></div>
+                      <div style={S.statCard("#6366f1")}><div style={S.statNum}>{opAg}</div><div style={S.statLabel}>🏦 OP</div></div>
+                    </div>
+                    <div style={S.card}>
+                      {actAg.length===0?(
+                        <div style={{textAlign:"center",color:"#94a3b8",padding:32,fontSize:13}}>Nicio activitate înregistrată în {fmt(zilnicData)}.</div>
+                      ):(
+                        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                          {actAg.map((a,i)=>(
+                            <div key={a.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"#f8fafc",borderRadius:10,flexWrap:"wrap"}}>
+                              <div style={{width:22,height:22,borderRadius:"50%",background:"#e2e8f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#64748b",flexShrink:0}}>{i+1}</div>
+                              <div style={{flex:1,minWidth:120}}>
+                                <div style={{fontWeight:600,fontSize:13}}>{clientMap[a.clientId]?.nume||"?"}</div>
+                                <div style={{fontSize:11,color:"#94a3b8"}}>{clientMap[a.clientId]?.oras}</div>
+                              </div>
+                              <div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
+                                {a.servicii.slice(0,2).map(s=><span key={s} style={{background:"#f1f5f9",color:"#475569",borderRadius:6,padding:"2px 6px",fontSize:10}}>{s}</span>)}
+                                {a.servicii.length>2&&<span style={{fontSize:10,color:"#94a3b8"}}>+{a.servicii.length-2}</span>}
+                              </div>
+                              <span style={S.badge(a.status)}><span style={S.dot(a.status)}/>{a.status}</span>
+                              {a.plata?<span style={{background:a.plata==="Cash"?"#fef9c3":"#dbeafe",color:a.plata==="Cash"?"#854d0e":"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{a.plata==="Cash"?"💵":"🏦"} {a.plata}</span>:<span style={{color:"#cbd5e1",fontSize:11}}>Fără plată</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              }
+
+              const actZi = activitati.filter(a=>a.data===zilnicData);
+              const totalZi = actZi.length;
+              const cashZi = actZi.filter(a=>a.plata==="Cash").length;
+              const opZi = actZi.filter(a=>a.plata==="OP").length;
+
+              // ── VIZUALIZARE: TOȚI AGENȚII ──
+              if(zilnicAgent==="toti") return (
+                <>
+                  <div className="stats-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:18}}>
+                    <div style={S.statCard("#3b82f6")}><div style={S.statNum}>{totalZi}</div><div style={S.statLabel}>Total vizite</div></div>
+                    <div style={S.statCard("#f59e0b")}><div style={S.statNum}>{cashZi}</div><div style={S.statLabel}>💵 Cash</div></div>
+                    <div style={S.statCard("#6366f1")}><div style={S.statNum}>{opZi}</div><div style={S.statLabel}>🏦 OP</div></div>
+                  </div>
+                  {/* Tabel sumar toți agenții */}
+                  <div className="hide-mobile" style={S.card}>
+                    <div className="table-scroll">
+                      <table style={S.table}>
+                        <thead><tr>{["Agent","Vizite","💵 Cash","🏦 OP","Clienți vizitați"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                        <tbody>
+                          {agentiList.map(ag=>{
+                            const actAg=actZi.filter(a=>a.agent===ag);
+                            const cashAg=actAg.filter(a=>a.plata==="Cash").length;
+                            const opAg=actAg.filter(a=>a.plata==="OP").length;
+                            return(
+                              <tr key={ag} className="row-hover">
+                                <td style={{...S.td,fontWeight:600}}>
+                                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                                    <div style={{width:30,height:30,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:800,color:"#4f46e5"}}>{ag[0]}</div>
+                                    {ag}
+                                  </div>
+                                </td>
+                                <td style={S.td}><span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 9px",fontSize:12,fontWeight:700}}>{actAg.length}</span></td>
+                                <td style={S.td}>{cashAg>0?<span style={{background:"#fef9c3",color:"#854d0e",borderRadius:6,padding:"2px 9px",fontSize:12,fontWeight:700}}>{cashAg}</span>:<span style={{color:"#cbd5e1"}}>—</span>}</td>
+                                <td style={S.td}>{opAg>0?<span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 9px",fontSize:12,fontWeight:700}}>{opAg}</span>:<span style={{color:"#cbd5e1"}}>—</span>}</td>
+                                <td style={{...S.td,fontSize:12,color:"#475569"}}>{actAg.map(a=>clientMap[a.clientId]?.nume).filter(Boolean).join(", ")||"—"}</td>
+                              </tr>
+                            );
+                          })}
+                          {/* Total row */}
+                          <tr style={{background:"#f8fafc",fontWeight:700}}>
+                            <td style={{...S.td,fontWeight:800,color:"#0a0f1e"}}>TOTAL</td>
+                            <td style={S.td}><span style={{background:"#0a0f1e",color:"#fff",borderRadius:6,padding:"2px 9px",fontSize:12,fontWeight:700}}>{totalZi}</span></td>
+                            <td style={S.td}><span style={{background:"#fef9c3",color:"#854d0e",borderRadius:6,padding:"2px 9px",fontSize:12,fontWeight:700}}>{cashZi}</span></td>
+                            <td style={S.td}><span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 9px",fontSize:12,fontWeight:700}}>{opZi}</span></td>
+                            <td style={S.td}></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  {/* Mobile cards toți */}
+                  <div style={{display:"none"}} className="show-mobile-block">
+                    {agentiList.map(ag=>{
+                      const actAg=actZi.filter(a=>a.agent===ag);
+                      const cashAg=actAg.filter(a=>a.plata==="Cash").length;
+                      const opAg=actAg.filter(a=>a.plata==="OP").length;
+                      return(
+                        <div key={ag} style={{...S.actCard,marginBottom:10}}>
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:8}}>
+                              <div style={{width:34,height:34,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,color:"#4f46e5"}}>{ag[0]}</div>
+                              <div style={{fontWeight:700,fontSize:14}}>{ag}</div>
+                            </div>
+                            <span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 9px",fontSize:13,fontWeight:700}}>{actAg.length} vizite</span>
+                          </div>
+                          {actAg.length>0&&<div style={{display:"flex",gap:8,marginTop:8,flexWrap:"wrap"}}>
+                            {cashAg>0&&<span style={{background:"#fef9c3",color:"#854d0e",borderRadius:6,padding:"2px 9px",fontSize:12,fontWeight:700}}>💵 {cashAg} Cash</span>}
+                            {opAg>0&&<span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 9px",fontSize:12,fontWeight:700}}>🏦 {opAg} OP</span>}
+                          </div>}
+                          {actAg.length>0&&<div style={{fontSize:12,color:"#64748b",marginTop:6}}>{actAg.map(a=>clientMap[a.clientId]?.nume).filter(Boolean).join(", ")}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+
+              // ── VIZUALIZARE: PER AGENT ──
+              return (
+                <>
+                  {/* Selector agent */}
+                  <div style={{...S.filters,marginBottom:16}}>
+                    <select style={S.select} value={zilnicAgentSel} onChange={e=>setZilnicAgentSel(e.target.value)}>
+                      {agentiList.map(a=><option key={a}>{a}</option>)}
+                    </select>
+                  </div>
+                  {(()=>{
+                    const actAg = actZi.filter(a=>a.agent===zilnicAgentSel);
+                    const cashAg = actAg.filter(a=>a.plata==="Cash").length;
+                    const opAg = actAg.filter(a=>a.plata==="OP").length;
+                    return(
+                      <>
+                        <div className="stats-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:18}}>
+                          <div style={S.statCard("#3b82f6")}><div style={S.statNum}>{actAg.length}</div><div style={S.statLabel}>Vizite</div></div>
+                          <div style={S.statCard("#f59e0b")}><div style={S.statNum}>{cashAg}</div><div style={S.statLabel}>💵 Cash</div></div>
+                          <div style={S.statCard("#6366f1")}><div style={S.statNum}>{opAg}</div><div style={S.statLabel}>🏦 OP</div></div>
+                        </div>
+                        <div style={S.card}>
+                          {actAg.length===0 ? (
+                            <div style={{textAlign:"center",color:"#94a3b8",padding:32,fontSize:13}}>Nicio activitate în {fmt(zilnicData)}</div>
+                          ) : (
+                            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                              {actAg.map((a,i)=>(
+                                <div key={a.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"#f8fafc",borderRadius:10,flexWrap:"wrap"}}>
+                                  <div style={{width:22,height:22,borderRadius:"50%",background:"#e2e8f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#64748b",flexShrink:0}}>{i+1}</div>
+                                  <div style={{flex:1,minWidth:120}}>
+                                    <div style={{fontWeight:600,fontSize:13}}>{clientMap[a.clientId]?.nume||"?"}</div>
+                                    <div style={{fontSize:11,color:"#94a3b8"}}>{clientMap[a.clientId]?.oras}</div>
+                                  </div>
+                                  <div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
+                                    {a.servicii.slice(0,2).map(s=><span key={s} style={{background:"#f1f5f9",color:"#475569",borderRadius:6,padding:"2px 6px",fontSize:10}}>{s}</span>)}
+                                    {a.servicii.length>2&&<span style={{fontSize:10,color:"#94a3b8"}}>+{a.servicii.length-2}</span>}
+                                  </div>
+                                  <span style={S.badge(a.status)}><span style={S.dot(a.status)}/>{a.status}</span>
+                                  {a.plata?<span style={{background:a.plata==="Cash"?"#fef9c3":"#dbeafe",color:a.plata==="Cash"?"#854d0e":"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{a.plata==="Cash"?"💵":"🏦"} {a.plata}</span>:<span style={{color:"#cbd5e1",fontSize:11}}>Fără plată</span>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* ── CALENDAR ── */}
+        {tab==="calendar"&&(
+          <div className="fade">
+            <div style={S.header}>
+              <div>
+                <div style={S.pageTitle}>Calendar</div>
+                <div style={S.pageSub}>{MONTHS_RO[calMonth]} {calYear}</div>
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                {isAdmin&&<select style={S.select} value={calAgent} onChange={e=>setCalAgent(e.target.value)}>
+                  <option>Toți</option>
+                  {agentiList.map(a=><option key={a}>{a}</option>)}
+                </select>}
+                <button style={S.btnOutline} onClick={()=>{let m=calMonth-1,y=calYear;if(m<0){m=11;y--;}setCalMonth(m);setCalYear(y);}}>‹</button>
+                <button style={S.btnOutline} onClick={()=>{let m=calMonth+1,y=calYear;if(m>11){m=0;y++;}setCalMonth(m);setCalYear(y);}}>›</button>
+                <button style={S.btn} onClick={()=>openAdd()}>+ Adaugă</button>
+              </div>
+            </div>
+            <div style={S.card}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:4}}>
+                {DAYS_RO.map(d=><div key={d} style={{textAlign:"center",fontSize:11,fontWeight:700,color:"#94a3b8",padding:"4px 0"}}>{d}</div>)}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+                {getCalendarDays(calYear,calMonth).map((d,i)=>{
+                  const isToday=d&&`${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`===today();
+                  const acts=d?(calEvents[d]||[]):[];
+                  return(
+                    <div key={i} className="cal-cell" style={{minHeight:52,borderRadius:8,padding:"4px 6px",background:isToday?"#eff6ff":acts.length?"#f0fdf4":"#f8fafc",border:isToday?"2px solid #3b82f6":"2px solid transparent",cursor:acts.length?"pointer":"default"}}>
+                      {d&&<>
+                        <div style={{fontSize:12,fontWeight:isToday?700:400,color:isToday?"#1d4ed8":"#64748b"}}>{d}</div>
+                        {acts.slice(0,2).map(a=>(
+                          <div key={a.id+"_"+a._tip} className="cal-event" style={{fontSize:10,color:a._tip==="urmatoare"?"#1e40af":"#065f46",background:a._tip==="urmatoare"?"#dbeafe":"#d1fae5",borderRadius:4,padding:"1px 4px",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                            {a._tip==="urmatoare"?"→ ":""}{a.agent.split(" ")[0]}
+                          </div>
+                        ))}
+                        {acts.length>2&&<div className="cal-event" style={{fontSize:10,color:"#94a3b8",marginTop:2}}>+{acts.length-2}</div>}
+                        {acts.length>0&&<div style={{width:6,height:6,background:"#10b981",borderRadius:"50%",marginTop:2}}/>}
+                      </>}
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{marginTop:14,display:"flex",flexDirection:"column",gap:8}}>
+                {Object.entries(calEvents).sort((a,b)=>a[0]-b[0]).map(([d,acts])=>(
+                  <div key={d} style={{background:"#f8fafc",borderRadius:8,padding:"8px 12px",fontSize:13}}>
+                    <strong>{d} {MONTHS_SHORT[calMonth]}</strong>
+                    {acts.map(a=>(
+                      <div key={a.id} style={{color:"#475569",marginTop:4,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <span style={{fontWeight:600}}>{a.agent}</span>→<span>{clientMap[a.clientId]?.nume}</span>
+                        <span style={S.badge(a.status)}>{a.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+                {Object.keys(calEvents).length===0&&<div style={{color:"#94a3b8",fontSize:13,textAlign:"center",padding:16}}>Nicio activitate în această lună.</div>}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── ALERTE ── */}
+        {tab==="alerte"&&(
+          <div className="fade">
+            <div style={S.header}>
+              <div>
+                <div style={S.pageTitle}>Alerte scadențe</div>
+                <div style={S.pageSub}>Clienți cu vizita depășită sau neprogramată</div>
+              </div>
+            </div>
+            {alerts.length===0?(
+              <div style={{...S.card,textAlign:"center",padding:48,color:"#10b981",fontWeight:600,fontSize:15}}>✅ Toți clienții sunt la zi!</div>
+            ):(
+              <>
+                {/* Desktop */}
+                <div className="hide-mobile" style={S.card}>
+                  <div className="table-scroll">
+                    <table style={S.table}>
+                      <thead><tr>{["Firmă","Oraș","Ultima vizită","Următoarea vizită programată","Zile întârziere",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {alerts.map(c=>{
+                          const actC=activitati.filter(a=>a.clientId===c.id&&a.status==="Finalizat").sort((a,b)=>new Date(b.data)-new Date(a.data));
+                          const last=actC[0];
+                          const urm=last?.urmatoareaVizita;
+                          const zileIntarziere=urm?daysBetween(urm,today()):last?daysBetween(last.data,today())-90:null;
+                          return(
+                            <tr key={c.id} className="row-hover">
+                              <td style={{...S.td,fontWeight:600}}>{c.nume}</td>
+                              <td style={S.td}>{c.oras||"—"}</td>
+                              <td style={{...S.td,fontSize:12}}>{last?`${fmt(last.data)} · ${last.agent}`:"Nicio vizită"}</td>
+                              <td style={S.td}>
+                                {urm
+                                  ? <span style={{color:"#dc2626",fontWeight:600,fontSize:12}}>⚠️ {fmt(urm)} (depășită)</span>
+                                  : <span style={{color:"#94a3b8",fontSize:12}}>Neprogramată</span>}
+                              </td>
+                              <td style={S.td}>
+                                <span style={{background:"#fee2e2",color:"#dc2626",borderRadius:8,padding:"3px 10px",fontSize:12,fontWeight:700}}>
+                                  {zileIntarziere!=null&&zileIntarziere>0?`${zileIntarziere} zile`:"—"}
+                                </span>
+                              </td>
+                              <td style={S.td}><button style={S.btn} onClick={()=>openAdd({clientId:c.id})}>+ Programează</button></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                {/* Mobile */}
+                <div style={{display:"none"}} className="show-mobile-block">
+                  {alerts.map(c=>{
+                    const actC=activitati.filter(a=>a.clientId===c.id&&a.status==="Finalizat").sort((a,b)=>new Date(b.data)-new Date(a.data));
+                    const last=actC[0];
+                    const urm=last?.urmatoareaVizita;
+                    const zileIntarziere=urm?daysBetween(urm,today()):last?daysBetween(last.data,today())-90:null;
+                    return(
+                      <div key={c.id} style={{...S.actCard,borderLeft:"4px solid #f59e0b"}}>
+                        <div style={{fontWeight:700,fontSize:14}}>{c.nume}</div>
+                        <div style={{fontSize:12,color:"#64748b",marginTop:2}}>{c.oras||"—"}</div>
+                        <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8,flexWrap:"wrap"}}>
+                          {urm
+                            ? <span style={{background:"#fee2e2",color:"#dc2626",borderRadius:8,padding:"3px 10px",fontSize:12,fontWeight:700}}>⚠️ {fmt(urm)} depășită</span>
+                            : <span style={{background:"#fef3c7",color:"#92400e",borderRadius:8,padding:"3px 10px",fontSize:12,fontWeight:600}}>Neprogramată</span>}
+                          {zileIntarziere!=null&&zileIntarziere>0&&<span style={{fontSize:12,color:"#dc2626",fontWeight:700}}>{zileIntarziere} zile întârziere</span>}
+                        </div>
+                        {last&&<div style={{fontSize:12,color:"#94a3b8",marginTop:4}}>Ultima: {fmt(last.data)} · {last.agent}</div>}
+                        <button style={{...S.btn,width:"100%",marginTop:10}} onClick={()=>openAdd({clientId:c.id})}>+ Programează vizită</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── CLIENTI ── */}
+        {tab==="clienti"&&(
+          <div className="fade">
+            <div style={S.header}>
+              <div>
+                <div style={S.pageTitle}>Clienți ({clienti.length})</div>
+                <div style={S.pageSub}>{clientiFiltrati.length} afișați</div>
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {isAdmin&&<button style={S.btnOutline} onClick={()=>{setImportPreview([]);setImportError("");setImportModal(true);}}>📥 Import Excel/CSV</button>}
+                <button style={S.btn} onClick={()=>setClientModal(true)}>+ Client nou</button>
+              </div>
+            </div>
+            <div style={{...S.filters,marginBottom:14}}>
+              <input style={{...S.input,flex:1,minWidth:160}} placeholder="🔍 Caută firmă sau oraș..." value={clientSearch} onChange={e=>setClientSearch(e.target.value)}/>
+              {clientSearch&&<button style={S.btnSm} onClick={()=>setClientSearch("")}>✕ Resetează</button>}
+            </div>
+            {/* Desktop */}
+            <div className="hide-mobile" style={S.card}>
+              <div className="table-scroll">
+                <table style={S.table}>
+                  <thead><tr>{["Firmă","Oraș","Domeniu","Activități","Ultima vizită",...(isAdmin?[""]:[])].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {clientiFiltrati.length===0&&<tr><td colSpan={isAdmin?6:5} style={{...S.td,textAlign:"center",padding:32,color:"#94a3b8"}}>Niciun client găsit.</td></tr>}
+                    {clientiFiltrati.map(c=>{
+                      const actC=activitati.filter(a=>a.clientId===c.id).sort((a,b)=>new Date(b.data)-new Date(a.data));
+                      const last=actC[0];
+                      return(
+                        <tr key={c.id} className="row-hover">
+                          <td style={{...S.td,fontWeight:600}}>{c.nume}</td>
+                          <td style={S.td}>{c.oras||"—"}</td>
+                          <td style={S.td}>{c.domeniu||"—"}</td>
+                          <td style={S.td}><span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:12,fontWeight:600}}>{actC.length}</span></td>
+                          <td style={{...S.td,fontSize:12,color:"#64748b"}}>{last?`${fmt(last.data)} · ${last.agent}`:"Nicio vizită"}</td>
+                          {isAdmin&&<td style={S.td}><button style={S.btnDanger} onClick={()=>deleteClient(c.id)}>🗑️ Șterge</button></td>}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            {/* Mobile */}
+            <div style={{display:"none"}} className="show-mobile-block">
+              {clientiFiltrati.length===0&&<div style={{textAlign:"center",color:"#94a3b8",padding:32,fontSize:13}}>Niciun client găsit.</div>}
+              {clientiFiltrati.map(c=>{
+                const actC=activitati.filter(a=>a.clientId===c.id).sort((a,b)=>new Date(b.data)-new Date(a.data));
+                const last=actC[0];
+                return(
+                  <div key={c.id} style={S.actCard}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:14}}>{c.nume}</div>
+                        <div style={{fontSize:12,color:"#64748b",marginTop:2}}>{c.oras}{c.domeniu?` · ${c.domeniu}`:""}</div>
+                      </div>
+                      <span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:12,fontWeight:600,flexShrink:0}}>{actC.length}</span>
+                    </div>
+                    {last&&<div style={{fontSize:12,color:"#94a3b8",marginTop:6}}>{fmt(last.data)} · {last.agent}</div>}
+                    {isAdmin&&<button style={{...S.btnDanger,width:"100%",marginTop:10,padding:"8px"}} onClick={()=>deleteClient(c.id)}>🗑️ Șterge client</button>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ── AGENTI ── */}
+        {tab==="agenti"&&isAdmin&&(
+          <div className="fade">
+            <div style={{...S.header,marginBottom:16}}>
+              <div style={S.pageTitle}>Agenți teren</div>
+            </div>
+            <div className="agents-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:14}}>
+              {agentiList.map(ag=>{
+                const actAg=activitati.filter(a=>a.agent===ag);
+                const fin=actAg.filter(a=>a.status==="Finalizat").length;
+                const cliAg=new Set(actAg.map(a=>a.clientId)).size;
+                const svc={};
+                actAg.forEach(a=>a.servicii.forEach(s=>{svc[s]=(svc[s]||0)+1;}));
+                const top=Object.entries(svc).sort((a,b)=>b[1]-a[1]).slice(0,3);
+                const lastAct=[...actAg].sort((a,b)=>new Date(b.data)-new Date(a.data))[0];
+                return(
+                  <div key={ag} style={{...S.card,borderTop:"3px solid #6366f1"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+                      <div style={{width:40,height:40,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:800,color:"#4f46e5",flexShrink:0}}>{ag[0]}</div>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:15}}>{ag}</div>
+                        <div style={{fontSize:11,color:"#94a3b8"}}>{lastAct?`Ultima: ${fmt(lastAct.data)}`:"Nicio activitate"}</div>
+                      </div>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:10}}>
+                      {[["Activități",actAg.length,"#dbeafe","#1e40af"],["Finalizate",fin,"#d1fae5","#065f46"],["Clienți",cliAg,"#fce7f3","#9d174d"]].map(([l,v,bg,col])=>(
+                        <div key={l} style={{background:bg,borderRadius:8,padding:"7px 6px",textAlign:"center"}}>
+                          <div style={{fontSize:18,fontWeight:900,color:col}}>{v}</div>
+                          <div style={{fontSize:10,color:col,opacity:0.8}}>{l}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {top.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:4}}>{top.map(([s])=><span key={s} style={{background:"#f1f5f9",color:"#475569",borderRadius:6,padding:"2px 6px",fontSize:10}}>{s}</span>)}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ── LUNAR ── */}
+        {tab==="lunar"&&isAdmin&&(()=>{
+          const lunarStr = `${lunarAn}-${String(lunarLuna+1).padStart(2,"0")}`;
+          const actLuna = activitati.filter(a=>a.data.startsWith(lunarStr)&&(lunarAgent==="Toți"||a.agent===lunarAgent));
+          const cashL = actLuna.filter(a=>a.plata==="Cash").length;
+          const opL = actLuna.filter(a=>a.plata==="OP").length;
+          const clientiUnici = new Set(actLuna.map(a=>a.clientId)).size;
+          const perAgent = agentiList.map(ag=>({
+            agent:ag,
+            count:actLuna.filter(a=>a.agent===ag).length,
+            cash:actLuna.filter(a=>a.agent===ag&&a.plata==="Cash").length,
+            op:actLuna.filter(a=>a.agent===ag&&a.plata==="OP").length,
+            clienti:new Set(actLuna.filter(a=>a.agent===ag).map(a=>a.clientId)).size,
+          }));
+          return(
+            <div className="fade">
+              <div style={S.header}>
+                <div>
+                  <div style={S.pageTitle}>Raport lunar</div>
+                  <div style={S.pageSub}>{MONTHS_RO[lunarLuna]} {lunarAn}</div>
+                </div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                  <select style={S.select} value={lunarLuna} onChange={e=>setLunarLuna(Number(e.target.value))}>
+                    {MONTHS_RO.map((m,i)=><option key={i} value={i}>{m}</option>)}
+                  </select>
+                  <select style={S.select} value={lunarAn} onChange={e=>setLunarAn(Number(e.target.value))}>
+                    {[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}
+                  </select>
+                  <select style={S.select} value={lunarAgent} onChange={e=>setLunarAgent(e.target.value)}>
+                    <option>Toți</option>
+                    {agentiList.map(a=><option key={a}>{a}</option>)}
+                  </select>
+                </div>
+              </div>
+              {/* Statistici sumar */}
+              <div className="stats-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:18}}>
+                <div style={S.statCard("#3b82f6")}><div style={S.statNum}>{actLuna.length}</div><div style={S.statLabel}>Total activități</div></div>
+                <div style={S.statCard("#10b981")}><div style={S.statNum}>{clientiUnici}</div><div style={S.statLabel}>Clienți vizitați</div></div>
+                <div style={S.statCard("#f59e0b")}><div style={S.statNum}>{cashL}</div><div style={S.statLabel}>💵 Cash</div></div>
+                <div style={S.statCard("#6366f1")}><div style={S.statNum}>{opL}</div><div style={S.statLabel}>🏦 OP</div></div>
+              </div>
+              {/* Tabel per agent */}
+              <div style={{...S.card,marginBottom:18}}>
+                <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>Activitate per agent — {MONTHS_RO[lunarLuna]} {lunarAn}</div>
+                <div className="hide-mobile">
+                  <table style={S.table}>
+                    <thead><tr>{["Agent","Activități","Clienți vizitați","💵 Cash","🏦 OP","Finalizate"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {perAgent.map(x=>(
+                        <tr key={x.agent} className="row-hover">
+                          <td style={{...S.td,fontWeight:600}}>
+                            <div style={{display:"flex",alignItems:"center",gap:8}}>
+                              <div style={{width:28,height:28,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:"#4f46e5"}}>{x.agent[0]}</div>
+                              {x.agent}
+                            </div>
+                          </td>
+                          <td style={S.td}><span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:12,fontWeight:700}}>{x.count}</span></td>
+                          <td style={S.td}>{x.clienti}</td>
+                          <td style={S.td}>{x.cash>0?<span style={{background:"#fef9c3",color:"#854d0e",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{x.cash}</span>:"—"}</td>
+                          <td style={S.td}>{x.op>0?<span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{x.op}</span>:"—"}</td>
+                          <td style={S.td}>{actLuna.filter(a=>a.agent===x.agent&&a.status==="Finalizat").length}</td>
+                        </tr>
+                      ))}
+                      <tr style={{background:"#f8fafc"}}>
+                        <td style={{...S.td,fontWeight:800}}>TOTAL</td>
+                        <td style={S.td}><span style={{background:"#0a0f1e",color:"#fff",borderRadius:6,padding:"2px 8px",fontSize:12,fontWeight:700}}>{actLuna.length}</span></td>
+                        <td style={S.td}>{clientiUnici}</td>
+                        <td style={S.td}><span style={{background:"#fef9c3",color:"#854d0e",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{cashL}</span></td>
+                        <td style={S.td}><span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{opL}</span></td>
+                        <td style={S.td}>{actLuna.filter(a=>a.status==="Finalizat").length}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                {/* Mobile */}
+                <div style={{display:"none"}} className="show-mobile-block">
+                  {perAgent.map(x=>(
+                    <div key={x.agent} style={{...S.actCard,marginBottom:8}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div style={{fontWeight:700}}>{x.agent}</div>
+                        <span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:12,fontWeight:700}}>{x.count} activități</span>
+                      </div>
+                      <div style={{display:"flex",gap:8,marginTop:6,flexWrap:"wrap"}}>
+                        <span style={{fontSize:12,color:"#64748b"}}>{x.clienti} clienți</span>
+                        {x.cash>0&&<span style={{background:"#fef9c3",color:"#854d0e",borderRadius:6,padding:"2px 7px",fontSize:11,fontWeight:700}}>💵 {x.cash}</span>}
+                        {x.op>0&&<span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 7px",fontSize:11,fontWeight:700}}>🏦 {x.op}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* Lista activitati din luna */}
+              <div style={S.card}>
+                <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>Toate activitățile din {MONTHS_RO[lunarLuna]}</div>
+                {actLuna.length===0?<div style={{textAlign:"center",color:"#94a3b8",padding:24,fontSize:13}}>Nicio activitate în această lună.</div>:(
+                  <div className="table-scroll">
+                    <table style={S.table}>
+                      <thead><tr>{["Data","Client","Agent","Servicii","Status","Plată"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {[...actLuna].sort((a,b)=>new Date(a.data)-new Date(b.data)).map(a=>(
+                          <tr key={a.id} className="row-hover">
+                            <td style={{...S.td,fontSize:12,whiteSpace:"nowrap"}}>{fmt(a.data)}</td>
+                            <td style={{...S.td,fontWeight:600}}>{clientMap[a.clientId]?.nume||"?"}</td>
+                            <td style={S.td}>{a.agent}</td>
+                            <td style={S.td}><div style={{display:"flex",flexWrap:"wrap",gap:3}}>{a.servicii.slice(0,2).map(s=><span key={s} style={{background:"#f1f5f9",color:"#475569",borderRadius:6,padding:"1px 6px",fontSize:10}}>{s}</span>)}{a.servicii.length>2&&<span style={{fontSize:10,color:"#94a3b8"}}>+{a.servicii.length-2}</span>}</div></td>
+                            <td style={S.td}><span style={S.badge(a.status)}><span style={S.dot(a.status)}/>{a.status}</span></td>
+                            <td style={S.td}>{a.plata?<span style={{background:a.plata==="Cash"?"#fef9c3":"#dbeafe",color:a.plata==="Cash"?"#854d0e":"#1e40af",borderRadius:6,padding:"2px 7px",fontSize:11,fontWeight:700}}>{a.plata}</span>:"—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── TRIMESTRIAL ── */}
+        {tab==="trimestrial"&&isAdmin&&(()=>{
+          const actTrim = activitati.filter(a=>a.data>=trimDe&&a.data<=trimPana&&(trimAgent==="Toți"||a.agent===trimAgent));
+          const cashT = actTrim.filter(a=>a.plata==="Cash").length;
+          const opT = actTrim.filter(a=>a.plata==="OP").length;
+          const clientiUnici = new Set(actTrim.map(a=>a.clientId)).size;
+          const perAgent = agentiList.map(ag=>({
+            agent:ag,
+            count:actTrim.filter(a=>a.agent===ag).length,
+            cash:actTrim.filter(a=>a.agent===ag&&a.plata==="Cash").length,
+            op:actTrim.filter(a=>a.agent===ag&&a.plata==="OP").length,
+            clienti:new Set(actTrim.filter(a=>a.agent===ag).map(a=>a.clientId)).size,
+            fin:actTrim.filter(a=>a.agent===ag&&a.status==="Finalizat").length,
+          }));
+          // shortcuts
+          function setQ(zile){ const d=new Date(); d.setDate(d.getDate()-zile); setTrimDe(d.toISOString().split("T")[0]); setTrimPana(today()); }
+          return(
+            <div className="fade">
+              <div style={S.header}>
+                <div>
+                  <div style={S.pageTitle}>Raport trimestrial</div>
+                  <div style={S.pageSub}>{fmt(trimDe)} — {fmt(trimPana)}</div>
+                </div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                  <select style={S.select} value={trimAgent} onChange={e=>setTrimAgent(e.target.value)}>
+                    <option>Toți</option>
+                    {agentiList.map(a=><option key={a}>{a}</option>)}
+                  </select>
+                </div>
+              </div>
+              {/* Shortcuts perioadă */}
+              <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+                {[["Ultimele 30 zile",30],["Ultimele 90 zile",90],["Ultimele 180 zile",180],["Ultimul an",365]].map(([l,z])=>(
+                  <button key={z} style={{...S.btnOutline,fontSize:12,padding:"6px 12px"}} onClick={()=>setQ(z)}>{l}</button>
+                ))}
+              </div>
+              {/* Perioadă custom */}
+              <div style={{...S.card,marginBottom:16,display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+                <div style={{fontSize:13,fontWeight:600,color:"#374151"}}>Perioadă personalizată:</div>
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <input type="date" style={{...S.input,cursor:"pointer"}} value={trimDe} onChange={e=>setTrimDe(e.target.value)}/>
+                  <span style={{fontSize:13,color:"#64748b"}}>până la</span>
+                  <input type="date" style={{...S.input,cursor:"pointer"}} value={trimPana} onChange={e=>setTrimPana(e.target.value)}/>
+                </div>
+              </div>
+              {/* Stats */}
+              <div className="stats-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:18}}>
+                <div style={S.statCard("#3b82f6")}><div style={S.statNum}>{actTrim.length}</div><div style={S.statLabel}>Total activități</div></div>
+                <div style={S.statCard("#10b981")}><div style={S.statNum}>{clientiUnici}</div><div style={S.statLabel}>Clienți vizitați</div></div>
+                <div style={S.statCard("#f59e0b")}><div style={S.statNum}>{cashT}</div><div style={S.statLabel}>💵 Cash</div></div>
+                <div style={S.statCard("#6366f1")}><div style={S.statNum}>{opT}</div><div style={S.statLabel}>🏦 OP</div></div>
+              </div>
+              {/* Tabel per agent */}
+              <div style={{...S.card,marginBottom:18}}>
+                <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>Activitate per agent în perioadă</div>
+                <div className="hide-mobile">
+                  <table style={S.table}>
+                    <thead><tr>{["Agent","Activități","Clienți","💵 Cash","🏦 OP","Finalizate"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {perAgent.map(x=>(
+                        <tr key={x.agent} className="row-hover">
+                          <td style={{...S.td,fontWeight:600}}>
+                            <div style={{display:"flex",alignItems:"center",gap:8}}>
+                              <div style={{width:28,height:28,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:"#4f46e5"}}>{x.agent[0]}</div>
+                              {x.agent}
+                            </div>
+                          </td>
+                          <td style={S.td}><span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:12,fontWeight:700}}>{x.count}</span></td>
+                          <td style={S.td}>{x.clienti}</td>
+                          <td style={S.td}>{x.cash>0?<span style={{background:"#fef9c3",color:"#854d0e",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{x.cash}</span>:"—"}</td>
+                          <td style={S.td}>{x.op>0?<span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{x.op}</span>:"—"}</td>
+                          <td style={S.td}>{x.fin}</td>
+                        </tr>
+                      ))}
+                      <tr style={{background:"#f8fafc"}}>
+                        <td style={{...S.td,fontWeight:800}}>TOTAL</td>
+                        <td style={S.td}><span style={{background:"#0a0f1e",color:"#fff",borderRadius:6,padding:"2px 8px",fontSize:12,fontWeight:700}}>{actTrim.length}</span></td>
+                        <td style={S.td}>{clientiUnici}</td>
+                        <td style={S.td}><span style={{background:"#fef9c3",color:"#854d0e",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{cashT}</span></td>
+                        <td style={S.td}><span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700}}>{opT}</span></td>
+                        <td style={S.td}>{actTrim.filter(a=>a.status==="Finalizat").length}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                {/* Mobile */}
+                <div style={{display:"none"}} className="show-mobile-block">
+                  {perAgent.filter(x=>x.count>0).map(x=>(
+                    <div key={x.agent} style={{...S.actCard,marginBottom:8}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div style={{fontWeight:700}}>{x.agent}</div>
+                        <span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 8px",fontSize:12,fontWeight:700}}>{x.count}</span>
+                      </div>
+                      <div style={{display:"flex",gap:8,marginTop:6,flexWrap:"wrap"}}>
+                        <span style={{fontSize:12,color:"#64748b"}}>{x.clienti} clienți · {x.fin} finalizate</span>
+                        {x.cash>0&&<span style={{background:"#fef9c3",color:"#854d0e",borderRadius:6,padding:"2px 7px",fontSize:11,fontWeight:700}}>💵 {x.cash}</span>}
+                        {x.op>0&&<span style={{background:"#dbeafe",color:"#1e40af",borderRadius:6,padding:"2px 7px",fontSize:11,fontWeight:700}}>🏦 {x.op}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── EXPORT ── */}
+        {tab==="export"&&isAdmin&&(
+          <div className="fade">
+            <div style={{...S.header,marginBottom:16}}>
+              <div style={S.pageTitle}>Export date</div>
+            </div>
+            <div className="export-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+              <div style={{...S.card,display:"flex",flexDirection:"column",gap:10}}>
+                <div style={{fontWeight:700,fontSize:15}}>📊 Toate activitățile</div>
+                <div style={{fontSize:13,color:"#64748b"}}>Export complet CSV, compatibil cu Excel.</div>
+                <button style={{...S.btn,alignSelf:"flex-start"}} onClick={()=>exportCSV(activitati,clientMap,"Toți")}>⬇ Descarcă CSV</button>
+              </div>
+              {agentiList.map(ag=>(
+                <div key={ag} style={{...S.card,display:"flex",flexDirection:"column",gap:8}}>
+                  <div style={{fontWeight:600,fontSize:14}}>👤 {ag}</div>
+                  <div style={{fontSize:12,color:"#64748b"}}>{activitati.filter(a=>a.agent===ag).length} activități</div>
+                  <button style={{...S.btnOutline,alignSelf:"flex-start",fontSize:12}} onClick={()=>exportCSV(activitati,clientMap,ag)}>⬇ Export</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── SETARI ── */}
+        {tab==="setari"&&isAdmin&&(
+          <div className="fade">
+            <div style={{...S.header,marginBottom:20}}>
+              <div>
+                <div style={S.pageTitle}>⚙️ Setări</div>
+                <div style={S.pageSub}>Gestionează agenții și serviciile</div>
+              </div>
+            </div>
+
+            {/* ── AGENTI ── */}
+            <div style={{...S.card,maxWidth:560,marginBottom:20}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:16}}>👥 Agenți teren</div>
+              <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
+                {agentiList.map((ag,i)=>(
+                  <div key={ag} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",background:"#f8fafc",borderRadius:10,border:"1px solid #e2e8f0"}}>
+                    {agentEditIdx===i ? (
+                      <>
+                        <input style={{...S.formInput,flex:1,padding:"6px 10px"}} value={agentEditVal.nume} onChange={e=>setAgentEditVal(v=>({...v,nume:e.target.value}))} placeholder="Nume"/>
+                        <input style={{...S.formInput,width:120,padding:"6px 10px"}} value={agentEditVal.parola} onChange={e=>setAgentEditVal(v=>({...v,parola:e.target.value}))} placeholder="Parolă nouă"/>
+                        <button style={{...S.btn,padding:"5px 12px",fontSize:12}} onClick={()=>{
+                          if(!agentEditVal.nume.trim()){ showToast("Introdu un nume!","err"); return; }
+                          const numeVechi = agentiList[i];
+                          const numeNou = agentEditVal.nume.trim();
+                          setAgentiList(p=>p.map((a,idx)=>idx===i?numeNou:a));
+                          setParoleMap(p=>{
+                            const n={...p};
+                            if(numeVechi!==numeNou){ n[numeNou]=agentEditVal.parola||p[numeVechi]; delete n[numeVechi]; }
+                            else if(agentEditVal.parola) n[numeNou]=agentEditVal.parola;
+                            return n;
+                          });
+                          setAgentEditIdx(null); showToast("Agent actualizat!");
+                        }}>✅</button>
+                        <button style={{...S.btnSm,padding:"5px 10px"}} onClick={()=>setAgentEditIdx(null)}>✕</button>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{width:32,height:32,borderRadius:"50%",background:"#eef2ff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,color:"#4f46e5",flexShrink:0}}>{ag[0]}</div>
+                        <div style={{flex:1,fontSize:13,fontWeight:600,color:"#1a202c"}}>{ag}</div>
+                        <div style={{fontSize:11,color:"#94a3b8"}}>Parolă: {paroleMap[ag]||"—"}</div>
+                        <button style={{...S.btnSm,padding:"4px 10px",fontSize:12}} onClick={()=>{setAgentEditIdx(i);setAgentEditVal({nume:ag,parola:paroleMap[ag]||""});}}>✏️</button>
+                        <button style={{...S.btnDanger,padding:"4px 10px",fontSize:12,opacity:agentiList.length<=1?0.4:1}} disabled={agentiList.length<=1}
+                          onClick={()=>{
+                            if(confirm(`Ștergi agentul "${ag}"?`)){
+                              setAgentiList(p=>p.filter(x=>x!==ag));
+                              setParoleMap(p=>{const n={...p};delete n[ag];return n;});
+                              showToast("Agent șters.");
+                            }
+                          }}>🗑️</button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div style={{borderTop:"1px solid #e2e8f0",paddingTop:16}}>
+                <div style={{fontWeight:600,fontSize:13,marginBottom:10,color:"#374151"}}>+ Adaugă agent nou</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:8}}>
+                  <input style={S.formInput} placeholder="Nume agent" value={agentNou.nume} onChange={e=>setAgentNou(v=>({...v,nume:e.target.value}))}/>
+                  <input style={S.formInput} placeholder="Parolă" value={agentNou.parola} onChange={e=>setAgentNou(v=>({...v,parola:e.target.value}))}/>
+                  <button style={S.btn} onClick={()=>{
+                    if(!agentNou.nume.trim()||!agentNou.parola.trim()){ showToast("Completează numele și parola!","err"); return; }
+                    if(agentiList.includes(agentNou.nume.trim())){ showToast("Agentul există deja!","err"); return; }
+                    setAgentiList(p=>[...p,agentNou.nume.trim()]);
+                    setParoleMap(p=>({...p,[agentNou.nume.trim()]:agentNou.parola.trim()}));
+                    setAgentNou({nume:"",parola:""}); showToast("Agent adăugat!");
+                  }}>+ Adaugă</button>
+                </div>
+              </div>
+            </div>
+
+            {/* ── SERVICII ── */}
+            <div style={{...S.card,maxWidth:560}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:16}}>🛠️ Servicii prestate</div>
+              <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
+                {servicii.map((s,i)=>(
+                  <div key={s} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"#f8fafc",borderRadius:10,border:"1px solid #e2e8f0"}}>
+                    <div style={{flex:1,fontSize:13,fontWeight:500,color:"#1a202c"}}>{s}</div>
+                    <button
+                      style={{...S.btnDanger,padding:"4px 10px",fontSize:12,opacity:servicii.length<=1?0.4:1}}
+                      disabled={servicii.length<=1}
+                      onClick={()=>{
+                        if(confirm(`Ștergi serviciul "${s}"?`)){
+                          setServicii(p=>p.filter(x=>x!==s));
+                          showToast("Serviciu șters.");
+                        }
+                      }}>🗑️</button>
+                  </div>
+                ))}
+              </div>
+              <div style={{borderTop:"1px solid #e2e8f0",paddingTop:16}}>
+                <div style={{fontWeight:600,fontSize:13,marginBottom:10,color:"#374151"}}>+ Adaugă serviciu nou</div>
+                <div style={{display:"flex",gap:8}}>
+                  <input style={{...S.formInput,flex:1}} placeholder="Ex: Medicina muncii, Audit SSM..." value={serviciiNou}
+                    onChange={e=>setServiciiNou(e.target.value)}
+                    onKeyDown={e=>{
+                      if(e.key==="Enter"&&serviciiNou.trim()){
+                        if(servicii.includes(serviciiNou.trim())){ showToast("Serviciul există deja!","err"); return; }
+                        setServicii(p=>[...p.slice(0,-1), serviciiNou.trim(), p[p.length-1]]);
+                        setServiciiNou(""); showToast("Serviciu adăugat!");
+                      }
+                    }}/>
+                  <button style={S.btn} onClick={()=>{
+                    if(!serviciiNou.trim()){ showToast("Introdu numele serviciului!","err"); return; }
+                    if(servicii.includes(serviciiNou.trim())){ showToast("Serviciul există deja!","err"); return; }
+                    setServicii(p=>[...p.slice(0,-1), serviciiNou.trim(), p[p.length-1]]);
+                    setServiciiNou(""); showToast("Serviciu adăugat!");
+                  }}>+ Adaugă</button>
+                </div>
+                <div style={{fontSize:12,color:"#94a3b8",marginTop:8}}>"Altele" rămâne întotdeauna la final.</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
+      {actModal&&(
+        <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&setActModal(false)}>
+          <div className="modal-inner" style={S.modal}>
+            <div style={S.modalTitle}>{editId?"Editează activitate":"Activitate nouă"}</div>
+            <div style={S.formGroup}>
+              <label style={S.label}>Client *</label>
+              <select style={S.formInput} value={actForm.clientId} onChange={e=>setActForm(f=>({...f,clientId:e.target.value}))}>
+                <option value="">Selectează client...</option>
+                {clienti.map(c=><option key={c.id} value={c.id}>{c.nume}</option>)}
+              </select>
+            </div>
+            {isAdmin&&(
+              <div style={S.formGroup}>
+                <label style={S.label}>Agent *</label>
+                <select style={S.formInput} value={actForm.agent} onChange={e=>setActForm(f=>({...f,agent:e.target.value}))}>
+                  <option value="">Selectează agent...</option>
+                  {agentiList.map(a=><option key={a}>{a}</option>)}
+                </select>
+              </div>
+            )}
+            <div style={S.formGroup}>
+              <label style={S.label}>Servicii prestate *</label>
+              <div className="chip-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                {servicii.map(s=><div key={s} style={S.chip(actForm.servicii.includes(s))} onClick={()=>toggleServ(s)}>{s}</div>)}
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div style={S.formGroup}>
+                <label style={S.label}>Data *</label>
+                <input type="date" style={S.formInput} value={actForm.data} onChange={e=>setActForm(f=>({...f,data:e.target.value}))}/>
+              </div>
+              <div style={S.formGroup}>
+                <label style={S.label}>Status</label>
+                <select style={S.formInput} value={actForm.status} onChange={e=>setActForm(f=>({...f,status:e.target.value}))}>
+                  <option>Planificat</option>
+                  <option>În progres</option>
+                  <option>Finalizat</option>
+                </select>
+              </div>
+            </div>
+            <div style={S.formGroup}>
+              <label style={S.label}>Metodă de plată</label>
+              <div style={{display:"flex",gap:10}}>
+                {["","Cash","OP"].map(opt=>(
+                  <div key={opt} onClick={()=>setActForm(f=>({...f,plata:opt}))}
+                    style={{flex:1,padding:"10px",borderRadius:9,border:`2px solid ${actForm.plata===opt&&opt?"#3b82f6":"#e2e8f0"}`,background:actForm.plata===opt&&opt?"#eff6ff":"#f8fafc",cursor:"pointer",textAlign:"center",fontSize:13,fontWeight:600,color:actForm.plata===opt&&opt?"#1e40af":"#94a3b8",transition:"all 0.15s"}}>
+                    {opt===""?"Niciuna":opt==="Cash"?"💵 Cash":"🏦 OP"}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={S.formGroup}>
+              <label style={S.label}>Note</label>
+              <textarea style={{...S.formInput,height:68,resize:"vertical"}} value={actForm.note} onChange={e=>setActForm(f=>({...f,note:e.target.value}))} placeholder="Observații..."/>
+            </div>
+            {(actForm.status==="Finalizat"||actForm.status==="În progres")&&!(actForm.servicii.length===1&&actForm.servicii[0]==="Închiriere Cabana Dangău")&&(
+              <div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:"14px 16px",marginTop:4}}>
+                <label style={{...S.label,color:"#1e40af",marginBottom:8}}>
+                  📅 Următoarea vizită *
+                  {!actForm.urmatoareaVizita&&<span style={{background:"#fee2e2",color:"#dc2626",borderRadius:6,padding:"2px 7px",fontSize:11,marginLeft:8,fontWeight:700}}>Obligatoriu</span>}
+                </label>
+                <input type="date" style={{...S.formInput,borderColor:!actForm.urmatoareaVizita?"#fca5a5":"#93c5fd",borderWidth:!actForm.urmatoareaVizita?2:1}}
+                  value={actForm.urmatoareaVizita}
+                  min={today()}
+                  onChange={e=>setActForm(f=>({...f,urmatoareaVizita:e.target.value}))}/>
+                {actForm.urmatoareaVizita?(
+                  <div style={{fontSize:12,color:"#1e40af",marginTop:6,fontWeight:500}}>
+                    ✅ Vizită programată pentru {fmt(actForm.urmatoareaVizita)} — va apărea în calendar și alerte.
+                  </div>
+                ):(
+                  <div style={{fontSize:12,color:"#dc2626",marginTop:6,fontWeight:500}}>
+                    ⚠️ Selectează data următoarei vizite pentru a putea salva.
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={S.modalActions}>
+              <button style={S.btnOutline} onClick={()=>setActModal(false)}>Anulează</button>
+              <button style={S.btn} onClick={saveAct}>Salvează</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL IMPORT ── */}
+      {importModal&&(
+        <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&setImportModal(false)}>
+          <div className="modal-inner" style={{...S.modal,maxWidth:560}}>
+            <div style={S.modalTitle}>📥 Import clienți din Excel / CSV</div>
+            {importPreview.length===0 ? (
+              <>
+                <div style={{background:"#f0f9ff",border:"1px solid #bae6fd",borderRadius:10,padding:"14px 16px",marginBottom:16,fontSize:13,color:"#0369a1"}}>
+                  <strong>Cum funcționează:</strong><br/>
+                  Exportă clienții din SmartBill ca Excel sau CSV, apoi încarcă fișierul aici. Aplicația detectează automat coloanele cu Denumire, Oraș și Domeniu. Duplicatele sunt ignorate automat.
+                </div>
+                {importError&&<div style={{background:"#fee2e2",color:"#dc2626",borderRadius:8,padding:"10px 12px",fontSize:13,marginBottom:12}}>{importError}</div>}
+                <label style={{display:"block",border:"2px dashed #cbd5e1",borderRadius:12,padding:"32px",textAlign:"center",cursor:"pointer",background:"#f8fafc"}}>
+                  <div style={{fontSize:28,marginBottom:8}}>📂</div>
+                  <div style={{fontWeight:600,fontSize:14,color:"#374151"}}>Apasă pentru a selecta fișierul</div>
+                  <div style={{fontSize:12,color:"#94a3b8",marginTop:4}}>Acceptă .xls, .xlsx sau .csv exportat din SmartBill</div>
+                  <input type="file" accept=".csv,.xlsx,.xls" style={{display:"none"}} onChange={handleImportFile}/>
+                </label>
+                <div style={{marginTop:14,fontSize:12,color:"#94a3b8"}}>
+                  <strong>Format acceptat:</strong> fișier CSV cu coloane Denumire / Client / Nume, opțional Oraș și Domeniu.
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:10,padding:"12px 16px",marginBottom:14,fontSize:13,color:"#166534"}}>
+                  ✅ Am găsit <strong>{importPreview.length} clienți</strong> în fișier. Verifică lista și confirmă importul.
+                </div>
+                <div style={{maxHeight:280,overflowY:"auto",border:"1px solid #e2e8f0",borderRadius:10,marginBottom:14}}>
+                  <table style={{...S.table,minWidth:"unset"}}>
+                    <thead><tr>{["Firmă","Oraș","Domeniu"].map(h=><th key={h} style={{...S.th,fontSize:11}}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {importPreview.map((c,i)=>(
+                        <tr key={i}>
+                          <td style={{...S.td,fontSize:12,fontWeight:600}}>{c.nume}</td>
+                          <td style={{...S.td,fontSize:12}}>{c.oras||"—"}</td>
+                          <td style={{...S.td,fontSize:12}}>{c.domeniu||"—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{fontSize:12,color:"#64748b",marginBottom:14}}>Clienții care există deja în aplicație vor fi ignorați automat.</div>
+              </>
+            )}
+            <div style={S.modalActions}>
+              <button style={S.btnOutline} onClick={()=>{setImportModal(false);setImportPreview([]);setImportError("");}}>Anulează</button>
+              {importPreview.length>0&&<button style={S.btn} onClick={confirmImport}>✅ Confirmă importul</button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL CLIENT ── */}
+      {clientModal&&(
+        <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&setClientModal(false)}>
+          <div className="modal-inner" style={{...S.modal,maxWidth:400}}>
+            <div style={S.modalTitle}>Client nou</div>
+            {[["Nume firmă *","nume"],["Oraș","oras"],["Domeniu","domeniu"]].map(([lbl,key])=>(
+              <div key={key} style={S.formGroup}>
+                <label style={S.label}>{lbl}</label>
+                <input style={S.formInput} value={clientForm[key]} onChange={e=>setClientForm(f=>({...f,[key]:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&saveClient()}/>
+              </div>
+            ))}
+            <div style={S.modalActions}>
+              <button style={S.btnOutline} onClick={()=>setClientModal(false)}>Anulează</button>
+              <button style={S.btn} onClick={saveClient}>Adaugă</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── TOAST ── */}
+      {toast&&(
+        <div style={S.toastWrap}>
+          <div style={S.toastItem(toast.type)}>{toast.type==="err"?"❌":"✅"} {toast.msg}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(React.createElement(App));
+  </script>
+</body>
+</html>
